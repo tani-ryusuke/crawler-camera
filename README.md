@@ -1,35 +1,21 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C6 | ESP32-H2 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+# クローラーロボット開発プロジェクト（カメラアタッチメント・映像配信側）
 
-# _Sample project_
+本リポジトリは、超小型マイコンボード「Seeed Studio XIAO ESP32S3 Sense」およびESP-IDF（v5.3.5）開発環境を用いた、3層構造クローラーロボット用カメラモジュールのファームウェアです。マイコン自身がWi-Fiアクセスポイント（SoftAP）として機能し、接続されたクライアント（スマートフォンやPCのブラウザ）に対して、HTTPプロトコルを介したリアルタイムのMJPEG（Motion JPEG）ビデオストリーミングを高フレームレートかつ低遅延で提供します。
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## 主な実装機能と技術的特徴
 
-This is the simplest buildable example. The example is used by command `idf.py create-project`
-that copies the project to user specified path and set it's name. For more information follow the [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project)
+### 1. 外部PSRAMとダブルバッファリングによる滑らかなVGA映像出力
+高解像度かつ大容量な画像データを安定して処理するため、ESP32-S3の外部拡張メモリ（PSRAM）をフル活用しています。
+* **技術的工夫**: フレームバッファを2面確保する「ダブルバッファリング（`fb_count = 2`）」を実装。カメラモジュールが次のフレームをPSRAMへ非同期にキャプチャしている間、ウェブサーバーはもう一方のバッファからデータを送信します。これにより、映像の描画遅延や画面が上下で引き裂かれるようなティアリング現象を徹底的に排除し、VGAサイズ（640x480）・高画質設定（JPEG Quality: 10）における安定した配信性能を確保しています。
 
+### 2. multipart/x-mixed-replace によるプラグインレス・ストリーミング
+HTTP/1.1の標準仕様である `multipart/x-mixed-replace`（マルチパート換装バウンダリ）通信を採用。
+* **メリット**: 専用のスマホアプリや特殊な視聴プラグインを一切必要とせず、標準的なウェブブラウザ（ChromeやSafari等）から特定のURL（`http://192.168.4.1/stream`）にアクセスするだけで、標準機能としてリアルタイム映像を表示可能です。パケットごとに送信バウンダリを構築し、チャンク形式（`httpd_resp_send_chunk`）で連続送信することで、ネットワークのオーバーヘッドを最小限に抑えています。
 
+### 3. 屋外運用を可能にする完全スタンドアロンなSoftAP（親機）モード
+外部のWi-Fiルーターやインターネット環境に依存しない、自律型のSoftAP（アクセスポイント）モードを搭載。
+* **運用の優位性**: ロボット自体が独自のWi-Fi電波（SSID: `XIAO-ESP32S3-CRAWLER`）を発信するため、屋外、実験室など、あらゆる場所で即座にFPV操縦環境を構築できます。なお、モーター駆動やコントローラー側の無線通信干渉を考慮し、ワイヤレスチャンネルは「チャンネル1」に固定して運用しています。
 
-## How to use example
-We encourage the users to use the example as a template for the new projects.
-A recommended way is to follow the instructions on a [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project).
-
-## Example folder contents
-
-The project **sample_project** contains one source file in C language [main.c](main/main.c). The file is located in folder [main](main).
-
-ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt`
-files that provide set of directives and instructions describing the project's source files and targets
-(executable, library, or both). 
-
-Below is short explanation of remaining files in the project folder.
-
-```
-├── CMakeLists.txt
-├── main
-│   ├── CMakeLists.txt
-│   └── main.c
-└── README.md                  This is the file you are currently reading
-```
-Additionally, the sample project contains Makefile and component.mk files, used for the legacy Make based build system. 
-They are not used or needed when building with CMake and idf.py.
+### 4. ハードウェアの生存確認を伴う安全な初期化シーケンス
+システムの堅牢性を高めるため、`app_main` からの起動フローにおいて、依存関係制御を導入しています。
+* **構造の利点**: カメラモジュールの物理的な初期化（`init_camera()`）が完全に成功（`ESP_OK`）した場合のみ、Wi-FiスタックおよびHTTPサーバーの起動ルーチンへと遷移します。万が一、カメラの接触不良やハードウェア異常が発生した場合は無駄な電波発信やゴーストサーバーの立ち上げを防止し、エラーログ（`ESP_LOGE`）を出力して安全に待機するセーフティ設計を施しています。
