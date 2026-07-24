@@ -1,35 +1,25 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C6 | ESP32-H2 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+# クローラーロボット開発プロジェクト（カメラアタッチメント・映像配信側）
 
-# _Sample project_
+本リポジトリは、超小型マイコンボード「Seeed Studio XIAO ESP32S3 Sense」およびESP-IDF（v5.3.5）開発環境を用いた、3層構造クローラーロボット用カメラモジュールのファームウェアです。マイコン自身がWi-Fiアクセスポイント（SoftAP）として機能し、HTTPプロトコルを介した高フレームレート・低遅延のリアルタイムMJPEG（Motion JPEG）ビデオストリーミング配信に加え、メイン制御側から有線UART経由で受信した各種センサー警報やコマンド成否データを、UDPブロードキャストによってAndroidアプリ側へ即時中継する統合通信モジュールとして動作します。
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## 主な実装機能と技術的特徴
 
-This is the simplest buildable example. The example is used by command `idf.py create-project`
-that copies the project to user specified path and set it's name. For more information follow the [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project)
+### 1. 外部PSRAMとダブルバッファリングによる滑らかなVGA映像出力
+高解像度かつ大容量な画像データを安定して処理するため、ESP32-S3の外部拡張メモリ（PSRAM）をフル活用しています。
+* **技術的工夫**: フレームバッファを2面確保する「ダブルバッファリング（`fb_count = 2`）」およびOV2640のハードウェアJPEGエンコーダ（20MHz駆動）を導入。カメラモジュールが次のフレームをPSRAMへ非同期にキャプチャしている間、ウェブサーバーはもう一方のバッファからデータを送信します。これにより、VGAサイズ（640x480）・高品質設定（JPEG Quality: 10）における描画遅延やティアリング現象を徹底的に排除し、安定した配信性能を確保しています。
 
+### 2. `multipart/x-mixed-replace` によるプラグインレス・ストリーミング
+HTTP/1.1の標準仕様である `multipart/x-mixed-replace`（マルチパート換装バウンダリ）通信を採用。
+* **メリット**: 専用アプリや特殊なプラグインを一切必要とせず、標準的なウェブブラウザやビューアーから `http://192.168.4.1/stream` にアクセスするだけで、リアルタイム映像を表示可能です。チャンク形式（`httpd_resp_send_chunk`）による連続送信でネットワークオーバーヘッドを最小化しています。
 
+### 3. 屋外運用を可能にする完全スタンドアロンなSoftAP（親機）モード
+外部ルーターに依存しない自律型のSoftAPモードを搭載。
+* **運用の優位性**: ロボット自体が独自のWi-Fi電波（SSID: `XIAO-ESP32S3-CRAWLER` / パスワード: `12345678`）を発信し、最大4台までの同時接続をサポート。ワイヤレスチャンネルはメイン制御側のESP-NOW通信干渉を考慮して「チャンネル1」に固定しています。
 
-## How to use example
-We encourage the users to use the example as a template for the new projects.
-A recommended way is to follow the instructions on a [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project).
+### 4. ハードウェアの生存確認を伴う安全な初期化シーケンス
+システムの堅牢性を高めるため、依存関係制御を導入しています。
+* **構造の利点**: カメラの物理的初期化（`init_camera()`）が完全に成功した場合のみ、Wi-Fiスタック、HTTPサーバー、および有線通信監視タスクを起動。異常時はエラーログを出力して無駄な電波発信やゴーストサーバーの立ち上げを防止するセーフティ設計です。
 
-## Example folder contents
-
-The project **sample_project** contains one source file in C language [main.c](main/main.c). The file is located in folder [main](main).
-
-ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt`
-files that provide set of directives and instructions describing the project's source files and targets
-(executable, library, or both). 
-
-Below is short explanation of remaining files in the project folder.
-
-```
-├── CMakeLists.txt
-├── main
-│   ├── CMakeLists.txt
-│   └── main.c
-└── README.md                  This is the file you are currently reading
-```
-Additionally, the sample project contains Makefile and component.mk files, used for the legacy Make based build system. 
-They are not used or needed when building with CMake and idf.py.
+### 5. 有線UART・パターン検出割り込みとAndroid向けUDP高速中継
+メイン制御側（ESP32-S3）のD6/D7ピンと115200 bpsで直結し、データ送受信を監視する専用のバックグラウンドタスク（`uart_to_android_rx_task`）を実装。
+* **リアルタイム転送**: ハードウェアレベルの改行コード（`\n`）検出パターン割り込みおよびイベントキューを活用し、CPU負荷ゼロで効率的にデータをキャプチャ。受信したPIRセンサー警報や格闘ゲームコマンドの判定結果などの文字列データを、UDPブロードキャスト（ポート番号: `8888`）によってネットワーク経由でAndroidアプリへ即座に転送・連携します。
